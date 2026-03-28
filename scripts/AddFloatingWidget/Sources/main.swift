@@ -118,14 +118,18 @@ guard let blockzillaGroup = findGroup(named: "Blockzilla", in: mainGroup) else {
     exit(1)
 }
 
+guard let target = pbxproj.nativeTargets.first(where: { $0.name == "Blockzilla" }) else {
+    fputs("ERROR: 'Blockzilla' target not found\n", stderr)
+    exit(1)
+}
+
+for config in target.buildConfigurationList?.buildConfigurations ?? [] {
+    config.buildSettings["CODE_SIGN_ENTITLEMENTS"] = "Blockzilla/Focus.entitlements"
+}
+
 if findGroup(named: "FloatingWidget", in: blockzillaGroup) != nil {
     print("FloatingWidget group already present — skipping file registration.")
 } else {
-    guard let target = pbxproj.nativeTargets.first(where: { $0.name == "Blockzilla" }) else {
-        fputs("ERROR: 'Blockzilla' target not found\n", stderr)
-        exit(1)
-    }
-
     let sourcesBuildPhase: PBXSourcesBuildPhase
     do {
         guard let phase = try target.sourcesBuildPhase() else {

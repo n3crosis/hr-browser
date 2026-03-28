@@ -1,4 +1,5 @@
 import UIKit
+import HealthKit
 
 // Fully standalone — no dependency on SettingsToggle, Settings, or BlockerToggle.
 // This means zero patches needed to existing app source files.
@@ -32,7 +33,7 @@ final class WidgetSettingsViewController: UITableViewController {
     // MARK: - Data source
 
     override func numberOfSections(in tableView: UITableView) -> Int { 1 }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { 1 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { 2 }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { "WIDGET" }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         "Shows a draggable floating button on top of all content. Tap it to open this page."
@@ -40,13 +41,35 @@ final class WidgetSettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-        cell.textLabel?.text = "Show Floating Widget"
-        cell.accessoryView = widgetSwitch
-        cell.selectionStyle = .none
+        
+        if indexPath.row == 0 {
+            cell.textLabel?.text = "Show Floating Widget"
+            cell.accessoryView = widgetSwitch
+            cell.selectionStyle = .none
+        } else {
+            cell.textLabel?.text = "Request Health Access"
+            cell.textLabel?.textColor = .systemBlue
+            cell.selectionStyle = .default
+        }
+        
         return cell
     }
 
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        if indexPath.row == 1 {
+            requestHealthKitAccess()
+        }
+    }
+
     // MARK: - Actions
+
+    private func requestHealthKitAccess() {
+        guard HKHealthStore.isHealthDataAvailable() else { return }
+        let store = HKHealthStore()
+        guard let hr = HKObjectType.quantityType(forIdentifier: .heartRate) else { return }
+        store.requestAuthorization(toShare: nil, read: [hr]) { _, _ in }
+    }
 
     @objc private func switchChanged(_ sender: UISwitch) {
         UserDefaults.standard.set(sender.isOn, forKey: Self.defaultsKey)

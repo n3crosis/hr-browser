@@ -95,10 +95,9 @@ swift build --package-path "${ADD_WIDGET_PKG}" --quiet --disable-sandbox
 # Suffixes like .ShareExtension, .ContentBlocker, etc. are preserved.
 # -----------------------------------------------------------------------------
 echo "--> [1/7] Replacing bundle identifiers..."
-grep -rl "org\.mozilla\.ios\.Klar\|org\.mozilla\.ios\.Focus" . \
-  | xargs sed -i '' \
+grep -rl "org\.mozilla\.ios\.Klar\|org\.mozilla\.ios\.Focus" . | xargs sed -i '' \
       -e "s/org\.mozilla\.ios\.Klar/${BUNDLE_ID}/g" \
-      -e "s/org\.mozilla\.ios\.Focus/${BUNDLE_ID}/g"
+      -e "s/org\.mozilla\.ios\.Focus/${BUNDLE_ID}/g" || true
 
 # -----------------------------------------------------------------------------
 # Step 2 — Strip the .enterprise suffix from bundle identifiers
@@ -113,7 +112,7 @@ echo "--> [2/7] Stripping .enterprise suffix from bundle IDs..."
 # Escape dots in BUNDLE_ID so they are treated as literal dots in the regex
 BUNDLE_ID_ESC="${BUNDLE_ID//./\\.}"
 grep -rl "${BUNDLE_ID_ESC}\.enterprise" . \
-  | xargs sed -i '' "s/${BUNDLE_ID_ESC}\.enterprise/${BUNDLE_ID}/g"
+  | xargs sed -i '' "s/${BUNDLE_ID_ESC}\.enterprise/${BUNDLE_ID}/g" || true
 
 # -----------------------------------------------------------------------------
 # Step 3 — Replace the old Mozilla team ID in non-project files
@@ -126,7 +125,7 @@ grep -rl "${BUNDLE_ID_ESC}\.enterprise" . \
 # -----------------------------------------------------------------------------
 echo "--> [3/7] Replacing old Mozilla team ID across all source files..."
 grep -rl "43AQ936H96" . \
-  | xargs sed -i '' "s/43AQ936H96/${TEAM_ID}/g"
+  | xargs sed -i '' "s/43AQ936H96/${TEAM_ID}/g" || true
 
 # -----------------------------------------------------------------------------
 # Step 7 — Disable all telemetry and reporting (logic + UI)
@@ -394,7 +393,33 @@ if [[ ! -d "${SOURCES_WIDGET}" ]]; then
 fi
 cp -r "${SOURCES_WIDGET}/" "${WIDGET_DIR}/"
 
-# ---------- 7b — Run the pre-built Swift patcher ----------
+# ---------- 7b — Add HealthKit descriptions to Info.plist ----------
+INFO_PLIST="${FOCUS_DIR}/Blockzilla/Info.plist"
+echo "    Adding HealthKit usage descriptions to Info.plist..."
+/usr/libexec/PlistBuddy -c "Delete :NSHealthShareUsageDescription" "${INFO_PLIST}" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Delete :NSHealthUpdateUsageDescription" "${INFO_PLIST}" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :NSHealthShareUsageDescription string 'This lets the app display your heart rate on the widget.'" "${INFO_PLIST}"
+/usr/libexec/PlistBuddy -c "Add :NSHealthUpdateUsageDescription string 'This lets the app display your heart rate on the widget.'" "${INFO_PLIST}"
+
+# ---------- 7c — Create HealthKit entitlements file ----------
+ENTITLEMENTS_FILE="${FOCUS_DIR}/Blockzilla/Focus.entitlements"
+echo "    Creating HealthKit entitlements file..."
+cat > "${ENTITLEMENTS_FILE}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.healthkit</key>
+	<true/>
+	<key>com.apple.developer.healthkit.access</key>
+	<array>
+		<string>health-records</string>
+	</array>
+</dict>
+</plist>
+EOF
+
+# ---------- 7d — Run the pre-built Swift patcher ----------
 "${ADD_WIDGET_BIN}" "${FOCUS_DIR}"
 
 

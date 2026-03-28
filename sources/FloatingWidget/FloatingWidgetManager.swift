@@ -22,6 +22,21 @@ final class FloatingWidgetManager: NSObject {
             name: UserDefaults.didChangeNotification,
             object: nil
         )
+        
+        // Swizzle UIViewController to detect SettingsViewController
+        UIViewController.fw_swizzleLifecycle()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(settingsAppeared),
+            name: NSNotification.Name("FWSettingsAppeared"),
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(settingsDisappeared),
+            name: NSNotification.Name("FWSettingsDisappeared"),
+            object: nil
+        )
     }
 
     /// Called from FloatingWidgetBootstrap.m via ObjC runtime.
@@ -30,7 +45,8 @@ final class FloatingWidgetManager: NSObject {
         guard overlayWindow == nil else { return }
 
         let window = PassthroughWindow(windowScene: scene)
-        window.windowLevel = .alert + 0.5
+        // High enough to be over AVPlayerViewController (full screen video usually uses normal or alert)
+        window.windowLevel = UIWindow.Level(rawValue: 10000)
         window.backgroundColor = .clear
         window.isUserInteractionEnabled = true
 
@@ -58,9 +74,22 @@ final class FloatingWidgetManager: NSObject {
         scene.windows.first { $0 !== window }?.makeKeyAndVisible()
     }
 
+    private var isSettingsVisible = false
+
     @objc func updateVisibility() {
         let enabled = UserDefaults.standard.object(forKey: Self.defaultsKey) as? Bool ?? true
-        overlayWindow?.isHidden = !enabled
+        widgetView?.isHidden = !enabled || isSettingsVisible
+        overlayWindow?.isHidden = !enabled && !isSettingsVisible
+    }
+
+    @objc private func settingsAppeared() {
+        isSettingsVisible = true
+        updateVisibility()
+    }
+
+    @objc private func settingsDisappeared() {
+        isSettingsVisible = false
+        updateVisibility()
     }
 
     func presentSettings() {
@@ -96,5 +125,43 @@ private final class PassthroughView: UIView {
         // If the only thing hit is this background view, return nil so the
         // touch falls through to the next window.
         return hit === self ? nil : hit
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Auto re-calculate position when bounds change (e.g. horizontal rotation)
+        for view in subviews {
+            if let widget = view as? FloatingWidgetView {
+                widget.setNeedsLayout()
+            }
+        }
+    }
+}
+
+extension UIViewController {
+    static func fw_swizzleLifecycle() {
+        let originalAppear = class_getInstanceMethod(UIViewController.self, #selector(viewDidAppear(_:)))
+        let swizzledAppear = class_getInstanceMethod(UIViewController.self, #selector(fw_viewDidAppear(_:)))
+        method_exchangeImplementations(originalAppear!, swizzledAppear!)
+        
+        let originalDisappear = class_getInstanceMethod(UIViewController.self, #selector(viewDidDisappear(_:)))
+        let swizzledDisappear = class_getInstanceMethod(UIViewController.self, #selector(fw_viewDidDisappear(_:)))
+        method_exchangeImplementations(originalDisappear!, swizzledDisappear!)
+    }
+
+    @objc func fw_viewDidAppear(_ animated: Bool) {
+        self.fw_viewDidAppear(animated) // calls original
+        let name = String(describing: type(of: self))
+        if name.contains("SettingsViewController") {
+            NotificationCenter.default.post(name: NSNotification.Name("FWSettingsAppeared"), object: nil)
+        }
+    }
+
+    @objc func fw_viewDidDisappear(_ animated: Bool) {
+        self.fw_viewDidDisappear(animated) // calls original
+        let name = String(describing: type(of: self))
+        if name.contains("SettingsViewController") {
+            NotificationCenter.default.post(name: NSNotification.Name("FWSettingsDisappeared"), object: nil)
+        }
     }
 }

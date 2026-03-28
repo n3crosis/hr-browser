@@ -1,8 +1,13 @@
 import UIKit
+import HealthKit
 
 final class FloatingWidgetView: UIView {
 
     private let diameter: CGFloat = 56
+    private let hrLabel = UILabel()
+    private var anchoredQuery: HKQuery?
+    private let healthStore = HKHealthStore()
+    private var isDragging = false
 
     override init(frame: CGRect) {
         super.init(frame: CGRect(x: 0, y: 0, width: 56, height: 56))
@@ -10,6 +15,12 @@ final class FloatingWidgetView: UIView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    
+    deinit {
+        if let query = anchoredQuery {
+            healthStore.stop(query)
+        }
+    }
 
     private func setup() {
         backgroundColor = .accent
@@ -19,15 +30,15 @@ final class FloatingWidgetView: UIView {
         layer.shadowOffset = CGSize(width: 0, height: 2)
         layer.shadowRadius = 4
 
-        let icon = UIImageView(image: UIImage(systemName: "circle.fill"))
-        icon.tintColor = .white
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(icon)
+        hrLabel.text = "--"
+        hrLabel.textColor = .white
+        hrLabel.font = .systemFont(ofSize: 18, weight: .bold)
+        hrLabel.textAlignment = .center
+        hrLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hrLabel)
         NSLayoutConstraint.activate([
-            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
-            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 24),
-            icon.heightAnchor.constraint(equalToConstant: 24),
+            hrLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            hrLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
@@ -35,30 +46,70 @@ final class FloatingWidgetView: UIView {
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
         addGestureRecognizer(tap)
+
+        startLiveHeartRate()
+    }
+
+    private func startLiveHeartRate() {
+        guard HKHealthStore.isHealthDataAvailable(),
+              let hrType = HKObjectType.quantityType(forIdentifier: .heartRate) else { return }
+
+        let query = HKAnchoredObjectQuery(
+            type: hrType,
+            predicate: nil,
+            anchor: nil,
+            limit: HKObjectQueryNoLimit
+        )
+        
+        query.updateHandler = { [weak self] _, samples, _, _, _ in
+            self?.processHeartRateSamples(samples)
+        }
+        
+        query.initialResultsHandler = { [weak self] _, samples, _, _, _ in
+            self?.processHeartRateSamples(samples)
+        }
+
+        healthStore.execute(query)
+        anchoredQuery = query
+    }
+
+    private func processHeartRateSamples(_ samples: [HKSample]?) {
+        guard let samples = samples as? [HKQuantitySample],
+              let lastSample = samples.max(by: { $0.endDate < $1.endDate }) else { return }
+        
+        let hr = lastSample.quantity.doubleValue(for: HKUnit(from: "count/min"))
+        DispatchQueue.main.async {
+            self.hrLabel.text = String(format: "%.0f", hr)
+        }
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         guard let superview = superview else { return }
-        let translation = gesture.translation(in: superview)
+        
+        if gesture.state == .began {
+            isDragging = true
+        }
 
+        let translation = gesture.translation(in: superview)
         center = CGPoint(x: center.x + translation.x, y: center.y + translation.y)
         gesture.setTranslation(.zero, in: superview)
 
-        if gesture.state == .ended || gesture.state == .cancelled {
-            snapToEdge(in: superview)
+        if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+            isDragging = false
+            keepWithinBounds(in: superview)
         }
     }
 
-    private func snapToEdge(in container: UIView) {
+    private func keepWithinBounds(in container: UIView) {
         let safeArea = container.safeAreaInsets
         let margin: CGFloat = 8
         let minY = safeArea.top + margin + diameter / 2
         let maxY = container.bounds.height - safeArea.bottom - margin - diameter / 2
-        let leftX = safeArea.left + margin + diameter / 2
-        let rightX = container.bounds.width - safeArea.right - margin - diameter / 2
+        let minX = safeArea.left + margin + diameter / 2
+        let maxX = container.bounds.width - safeArea.right - margin - diameter / 2
 
         var target = center
-        target.x = center.x < container.bounds.midX ? leftX : rightX
+        target.x = min(max(target.x, minX), maxX)
         target.y = min(max(target.y, minY), maxY)
 
         UIView.animate(
@@ -73,6 +124,13 @@ final class FloatingWidgetView: UIView {
 
     @objc private func handleTap() {
         FloatingWidgetManager.shared.presentSettings()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if let superview = superview, !isDragging {
+            keepWithinBounds(in: superview)
+        }
     }
 
     override var intrinsicContentSize: CGSize {
