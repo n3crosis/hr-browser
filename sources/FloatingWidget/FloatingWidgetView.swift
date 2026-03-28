@@ -54,18 +54,18 @@ final class FloatingWidgetView: UIView {
         guard HKHealthStore.isHealthDataAvailable(),
               let hrType = HKObjectType.quantityType(forIdentifier: .heartRate) else { return }
 
+        // We want all heart rate samples, including those generated during workouts.
+        // By passing nil for predicate, we get all samples.
         let query = HKAnchoredObjectQuery(
             type: hrType,
             predicate: nil,
             anchor: nil,
             limit: HKObjectQueryNoLimit
-        )
-        
-        query.updateHandler = { [weak self] _, samples, _, _, _ in
+        ) { [weak self] _, samples, _, _, _ in
             self?.processHeartRateSamples(samples)
         }
         
-        query.initialResultsHandler = { [weak self] _, samples, _, _, _ in
+        query.updateHandler = { [weak self] _, samples, _, _, _ in
             self?.processHeartRateSamples(samples)
         }
 
@@ -96,11 +96,11 @@ final class FloatingWidgetView: UIView {
 
         if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
             isDragging = false
-            keepWithinBounds(in: superview)
+            snapToNearestEdge(in: superview)
         }
     }
 
-    private func keepWithinBounds(in container: UIView) {
+    private func snapToNearestEdge(in container: UIView) {
         let safeArea = container.safeAreaInsets
         let margin: CGFloat = 8
         let minY = safeArea.top + margin + diameter / 2
@@ -109,8 +109,14 @@ final class FloatingWidgetView: UIView {
         let maxX = container.bounds.width - safeArea.right - margin - diameter / 2
 
         var target = center
-        target.x = min(max(target.x, minX), maxX)
         target.y = min(max(target.y, minY), maxY)
+        
+        // Snap to the nearest horizontal edge
+        if center.x < container.bounds.midX {
+            target.x = minX
+        } else {
+            target.x = maxX
+        }
 
         UIView.animate(
             withDuration: 0.35,
@@ -129,7 +135,7 @@ final class FloatingWidgetView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         if let superview = superview, !isDragging {
-            keepWithinBounds(in: superview)
+            snapToNearestEdge(in: superview)
         }
     }
 
