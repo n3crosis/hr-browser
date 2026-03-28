@@ -34,11 +34,14 @@ BUNDLE_ID="${BUNDLE_ID:-co.techbeast.ios.Klar}"
 # DISPLAY_NAME build settings. Replaces "Firefox Focus" and "Firefox Klar".
 APP_NAME="${APP_NAME:-Sealion}"
 
+# Export so child processes (Swift binary) can read them via ProcessInfo.
+export TEAM_ID APP_NAME
+
 # URL shown as the tappable "Terms of Use" link on the onboarding TOS screen.
-TERMS_URL="${TERMS_URL:-https://www.mozilla.org/about/legal/terms/firefox-focus/}"
+TERMS_URL="${TERMS_URL:-https://google.com/}"
 
 # URL shown as the tappable "Privacy Notice" link on the onboarding TOS screen.
-PRIVACY_URL="${PRIVACY_URL:-https://www.mozilla.org/privacy/firefox-focus/}"
+PRIVACY_URL="${PRIVACY_URL:-https://bing.com/}"
 
 # -----------------------------------------------------------------------------
 # Resolve paths relative to this script so it works from any working directory
@@ -64,6 +67,24 @@ echo ""
 
 cd "${FOCUS_DIR}"
 
+# Pre-build the Swift project patcher before any patching begins.
+# Compiles once; the build cache makes re-runs near-instant.
+# The tool handles ALL pbxproj edits in Step 7 (build settings + widget files).
+ADD_WIDGET_PKG="${SCRIPT_DIR}/scripts/AddFloatingWidget"
+ADD_WIDGET_BIN="${ADD_WIDGET_PKG}/.build/debug/AddFloatingWidget"
+if [[ ! -d "${ADD_WIDGET_PKG}" ]]; then
+  echo "ERROR: Swift tool not found at ${ADD_WIDGET_PKG}" >&2
+  exit 1
+fi
+echo "--> [pre] Building Swift project patcher..."
+swift build --package-path "${ADD_WIDGET_PKG}" --quiet --disable-sandbox
+
+# -----------------------------------------------------------------------------
+# Step 0 — Remove non-English localizations to speed up build and patching
+# -----------------------------------------------------------------------------
+# echo "--> [0/7] Removing non-English localizations..."
+# find . -type d -name "*.lproj" ! -name "en.lproj" ! -name "Base.lproj" -exec rm -rf {} +
+
 # -----------------------------------------------------------------------------
 # Step 1 — Replace Mozilla's bundle identifiers with your own base bundle ID
 #
@@ -73,7 +94,7 @@ cd "${FOCUS_DIR}"
 # Both are replaced with ${BUNDLE_ID} so all configurations stay consistent.
 # Suffixes like .ShareExtension, .ContentBlocker, etc. are preserved.
 # -----------------------------------------------------------------------------
-echo "--> [1/9] Replacing bundle identifiers..."
+echo "--> [1/7] Replacing bundle identifiers..."
 grep -rl "org\.mozilla\.ios\.Klar\|org\.mozilla\.ios\.Focus" . \
   | xargs sed -i '' \
       -e "s/org\.mozilla\.ios\.Klar/${BUNDLE_ID}/g" \
@@ -88,79 +109,24 @@ grep -rl "org\.mozilla\.ios\.Klar\|org\.mozilla\.ios\.Focus" . \
 # We collapse them back to ${BUNDLE_ID}[.SubTarget] so Apple signing doesn't
 # need a separate provisioning profile for the enterprise variant.
 # -----------------------------------------------------------------------------
-echo "--> [2/9] Stripping .enterprise suffix from bundle IDs..."
+echo "--> [2/7] Stripping .enterprise suffix from bundle IDs..."
 # Escape dots in BUNDLE_ID so they are treated as literal dots in the regex
 BUNDLE_ID_ESC="${BUNDLE_ID//./\\.}"
 grep -rl "${BUNDLE_ID_ESC}\.enterprise" . \
   | xargs sed -i '' "s/${BUNDLE_ID_ESC}\.enterprise/${BUNDLE_ID}/g"
 
 # -----------------------------------------------------------------------------
-# Step 3 — Inject your Development Team ID
+# Step 3 — Replace the old Mozilla team ID in non-project files
 #
-# The project hard-codes Mozilla's team (43AQ936H96) in most build configs.
-# The FocusEnterprise config has DEVELOPMENT_TEAM = "" (left intentionally
-# blank for enterprise distribution — we fill it with your team instead).
+# xcconfig and other source files may contain the hardcoded Mozilla team ID.
+# Simply swap it with yours. All pbxproj build settings (DEVELOPMENT_TEAM
+# blanks, platform-scoped overrides, provisioning specs, CODE_SIGN_STYLE, and
+# DISPLAY_NAME / PRODUCT_NAME) are handled by the Swift tool in Step 7 via the
+# XcodeProj API — no sed on project.pbxproj needed here.
 # -----------------------------------------------------------------------------
-echo "--> [3/9] Injecting development team ID (${TEAM_ID})..."
-
-# 3a. Replace Mozilla's production team ID wherever it appears, and ensure
-#     CODE_SIGN_STYLE = Automatic follows it (matches fix.sh behaviour).
-grep -rl "43AQ936H96;" . \
-  | xargs sed -i '' "s/43AQ936H96;/${TEAM_ID};\n\t\t\t\tCODE_SIGN_STYLE = Automatic;/g"
-
-# 3b. Fill in blank DEVELOPMENT_TEAM entries used by the FocusEnterprise config.
-sed -i '' "s/DEVELOPMENT_TEAM = \"\";/DEVELOPMENT_TEAM = ${TEAM_ID};/g" "${PBXPROJ}"
-
-# 3c. Remove all platform-scoped DEVELOPMENT_TEAM overrides entirely.
-# These were artifacts of manual signing ("DEVELOPMENT_TEAM[sdk=iphoneos*]" = X;)
-# and are not needed — the top-level DEVELOPMENT_TEAM value covers auto signing.
-sed -i '' '/"DEVELOPMENT_TEAM\[sdk=iphoneos\*\]"/d' "${PBXPROJ}"
-
-# -----------------------------------------------------------------------------
-# Step 4 — Remove all named provisioning profile specifiers
-#
-# Any named specifier ("bitrise ...", "BT ...", etc.) overrides
-# CODE_SIGN_STYLE = Automatic and forces Xcode to look for a specific profile
-# that doesn't exist in your environment. We also delete:
-#   - Platform-scoped PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*] lines
-#   - Platform-scoped CODE_SIGN_IDENTITY[sdk=iphoneos*] overrides ("iPhone
-#     Distribution" etc.) which conflict with Automatic identity resolution
-#   - Static PROVISIONING_PROFILE UUID lines left from CI
-# -----------------------------------------------------------------------------
-echo "--> [4/9] Removing all named provisioning profile specifiers..."
-# Remove platform-scoped specifier lines
-sed -i '' '/"PROVISIONING_PROFILE_SPECIFIER\[sdk=iphoneos\*\]"/d' "${PBXPROJ}"
-# Remove top-level specifiers that have a non-empty value (e.g. "BT ...", "bitrise ...")
-sed -i '' '/PROVISIONING_PROFILE_SPECIFIER = "[^"]/d' "${PBXPROJ}"
-# Remove platform-scoped CODE_SIGN_IDENTITY overrides — not needed for auto signing
-sed -i '' '/"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]"/d' "${PBXPROJ}"
-# Remove static PROVISIONING_PROFILE UUID lines left from CI
-sed -i '' '/PROVISIONING_PROFILE = "[0-9a-f-]*";/d' "${PBXPROJ}"
-
-# -----------------------------------------------------------------------------
-# Step 5 — Switch all targets to Xcode Automatic code signing
-#
-# Some configurations (especially the "BT" variants) are set to Manual.
-# Automatic lets Xcode manage certificates and provisioning profiles for you.
-# -----------------------------------------------------------------------------
-echo "--> [5/9] Enabling automatic code signing everywhere..."
-sed -i '' 's/CODE_SIGN_STYLE = Manual;/CODE_SIGN_STYLE = Automatic;/g' "${PBXPROJ}"
-
-# -----------------------------------------------------------------------------
-# Step 6 — Rename the app (DISPLAY_NAME and PRODUCT_NAME)
-#
-# The project ships with "Firefox Focus" and "Firefox Klar" as the visible
-# app name in DISPLAY_NAME (shown on the home screen) and PRODUCT_NAME (used
-# by Xcode for the built product). Both are replaced with APP_NAME so the
-# installed app appears under your chosen name.
-# -----------------------------------------------------------------------------
-echo "--> [6/9] Renaming app to '${APP_NAME}'..."
-sed -i '' \
-  -e "s/DISPLAY_NAME = \"Firefox Focus\";/DISPLAY_NAME = ${APP_NAME};/g" \
-  -e "s/DISPLAY_NAME = \"Firefox Klar\";/DISPLAY_NAME = ${APP_NAME};/g" \
-  -e "s/PRODUCT_NAME = \"Firefox Focus\";/PRODUCT_NAME = ${APP_NAME};/g" \
-  -e "s/PRODUCT_NAME = \"Firefox Klar\";/PRODUCT_NAME = ${APP_NAME};/g" \
-  "${PBXPROJ}"
+echo "--> [3/7] Replacing old Mozilla team ID across all source files..."
+grep -rl "43AQ936H96" . \
+  | xargs sed -i '' "s/43AQ936H96/${TEAM_ID}/g"
 
 # -----------------------------------------------------------------------------
 # Step 7 — Disable all telemetry and reporting (logic + UI)
@@ -174,7 +140,7 @@ sed -i '' \
 #    (usageData and studies are already hidden behind isTelemetryFeatureEnabled
 #    which is already false upstream.)
 # -----------------------------------------------------------------------------
-echo "--> [7/9] Disabling all telemetry and reporting..."
+echo "--> [4/7] Disabling all telemetry and reporting..."
 
 SETTINGS_FILE="${FOCUS_DIR}/Shared/Settings.swift"
 TELEMETRY_MANAGER="${FOCUS_DIR}/Blockzilla/Utilities/TelemetryManager.swift"
@@ -227,7 +193,7 @@ sed -i '' \
 # c) SettingsViewController.swift — remove .defaultBrowser and .siri from
 #    getSections() so those rows are never rendered.
 # -----------------------------------------------------------------------------
-echo "--> [8/9] Removing default browser prompts and Siri shortcuts..."
+echo "--> [5/7] Removing default browser prompts and Siri shortcuts..."
 
 ONBOARDING_DIR="${FOCUS_DIR}/BlockzillaPackage/Sources/Onboarding/SwiftUI Onboarding"
 ONBOARDING_VIEW="${ONBOARDING_DIR}/OnboardingView.swift"
@@ -306,7 +272,7 @@ sed -i '' \
 #    - Reduce numberOfRows for .aboutCategories from 3 to 2
 #    - Remove the aboutTopLabel paragraph line from AboutHeaderView
 # -----------------------------------------------------------------------------
-echo "--> [9/9] Cleaning up Safari, Mozilla branding, and About page..."
+echo "--> [6/7] Cleaning up Safari, Mozilla branding, and About page..."
 
 UI_CONSTANTS="${FOCUS_DIR}/Blockzilla/UIComponents/UIConstants.swift"
 ABOUT_VC="${FOCUS_DIR}/Blockzilla/Settings/Controller/AboutViewController.swift"
@@ -315,8 +281,15 @@ ABOUT_VC="${FOCUS_DIR}/Blockzilla/Settings/Controller/AboutViewController.swift"
 sed -i '' -e '/^[[:space:]]*integration,[[:space:]]*$/d' "${SETTINGS_VC}"
 
 # 9b — Rename "MOZILLA" section header to uppercased APP_NAME
+# UIConstants.swift holds the fallback value; Localizable.strings is what iOS
+# actually renders at runtime, so both need to be updated.
 APP_NAME_UPPER=$(echo "${APP_NAME}" | tr '[:lower:]' '[:upper:]')
 sed -i '' "s/value: \"MOZILLA\"/value: \"${APP_NAME_UPPER}\"/" "${UI_CONSTANTS}"
+
+# Only patch "MOZILLA" header strings in English and Base localizations
+find "${FOCUS_DIR}/Blockzilla" -type d \( -name "en.lproj" -o -name "Base.lproj" \) -exec \
+  grep -rl '"Settings\.sectionMozilla"' {} + \
+  | xargs sed -i '' "s/\(\"Settings\.sectionMozilla\" = \"\)[^\"]*\"/\1${APP_NAME_UPPER}\"/g"
 
 # 9c — Rewrite AboutViewController
 python3 - "${ABOUT_VC}" "${TERMS_URL}" "${PRIVACY_URL}" <<'PYEOF'
@@ -340,13 +313,13 @@ src = new_src
 pat_cells = (
     r'(case 0: cell\.textLabel\?\.text = UIConstants\.strings\.aboutRowHelp\n'
     r')(\s+)(case 1: cell\.textLabel\?\.text = UIConstants\.strings\.aboutRowTerms\n'
-    r'\3case 2: cell\.textLabel\?\.text = UIConstants\.strings\.aboutRowPrivacy)'
+    r'\s+case 2: cell\.textLabel\?\.text = UIConstants\.strings\.aboutRowPrivacy)'
 )
 m = re.search(pat_cells, src)
 if not m:
     print(f'ERROR: 9c-ii — configureCell rows not found in {path}', file=sys.stderr)
     sys.exit(1)
-indent = m.group(3)  # leading whitespace of case 1 / case 2 lines
+indent = m.group(2)  # leading whitespace captured by (\s+)
 new_cells = (
     f'case 0: cell.textLabel?.text = UIConstants.strings.aboutRowTerms\n'
     f'{indent}case 1: cell.textLabel?.text = UIConstants.strings.aboutRowPrivacy'
@@ -390,6 +363,40 @@ src = src[:m_top.start()] + src[m_top.end():]
 open(path, 'w').write(src)
 print(f'OK: AboutViewController patched successfully.')
 PYEOF
+
+# -----------------------------------------------------------------------------
+# Step 7 — Patch Xcode project + add floating widget  [Swift / XcodeProj API]
+#
+# The pre-built AddFloatingWidget tool (scripts/AddFloatingWidget/) handles every
+# pbxproj change in one structured pass — no sed on project.pbxproj at all:
+#   · DEVELOPMENT_TEAM set on all build configs (blank entries + old Mozilla ID)
+#   · Platform-conditional DEVELOPMENT_TEAM / PROVISIONING overrides removed
+#   · CODE_SIGN_STYLE = Automatic forced on every configuration
+#   · DISPLAY_NAME / PRODUCT_NAME renamed from Firefox variants to APP_NAME
+#   · FloatingWidget source files registered in the Blockzilla target
+#
+# Widget sources (edit freely in Xcode, re-run script to redeploy):
+#   FloatingWidgetBootstrap.m          — ObjC +load; calls Swift via runtime
+#   FloatingWidgetManager.swift        — @objc(FloatingWidgetManager) window mgr
+#   FloatingWidgetView.swift           — draggable circle; tap opens settings
+#   WidgetSettingsViewController.swift — standalone settings sheet
+# -----------------------------------------------------------------------------
+echo "--> [7/7] Patching Xcode project (build settings + widget files)..."
+
+WIDGET_DIR="${FOCUS_DIR}/Blockzilla/FloatingWidget"
+mkdir -p "${WIDGET_DIR}"
+
+# ---------- 7a — Copy widget source files ----------
+SOURCES_WIDGET="${SCRIPT_DIR}/sources/FloatingWidget"
+if [[ ! -d "${SOURCES_WIDGET}" ]]; then
+  echo "ERROR: Widget source files not found at ${SOURCES_WIDGET}" >&2
+  exit 1
+fi
+cp -r "${SOURCES_WIDGET}/" "${WIDGET_DIR}/"
+
+# ---------- 7b — Run the pre-built Swift patcher ----------
+"${ADD_WIDGET_BIN}" "${FOCUS_DIR}"
+
 
 echo ""
 echo "==> All done!"
