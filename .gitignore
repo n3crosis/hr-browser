@@ -1,0 +1,9 @@
+# Upstream Firefox iOS — managed manually, not committed
+firefox-ios/
+
+# macOS
+.DS_Store
+
+# Xcode derived data that may land here
+DerivedData/
+*.xcuserstate
