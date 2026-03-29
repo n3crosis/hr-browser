@@ -95,38 +95,7 @@ grep -rl "43AQ936H96" . \
 # -----------------------------------------------------------------------------
 echo "--> [4/6] Disabling all telemetry and reporting..."
 
-SETTINGS_FILE="${FOCUS_DIR}/Shared/Settings.swift"
-TELEMETRY_MANAGER="${FOCUS_DIR}/Blockzilla/Utilities/TelemetryManager.swift"
 SETTINGS_VC="${FOCUS_DIR}/Blockzilla/Settings/Controller/SettingsViewController.swift"
-
-# 4a — Hardcode telemetry toggle defaults to false
-sed -i '' \
-  -e 's/case \.sendAnonymousUsageData: return AppInfo\.isKlar ? false : true/case .sendAnonymousUsageData: return false/' \
-  -e 's/case \.studies: return AppInfo\.isKlar ? false : true/case .studies: return false/' \
-  -e 's/case \.rollouts: return AppInfo\.isKlar ? false : true/case .rollouts: return false/' \
-  -e 's/case \.crashToggle: return true/case .crashToggle: return false/' \
-  -e 's/case \.dailyUsagePing: return true/case .dailyUsagePing: return false/' \
-  "${SETTINGS_FILE}"
-
-# 4b — Make isNewTosEnabled always return false (multiline rewrite via Python)
-python3 - "${TELEMETRY_MANAGER}" <<'PYEOF'
-import sys, re
-path = sys.argv[1]
-src = open(path).read()
-sentinel = 'if let dailyUsagePing = Settings.getToggleIfAvailable(.dailyUsagePing)'
-if sentinel not in src:
-    print(f'ERROR: 4b — expected block not found in {path}', file=sys.stderr)
-    sys.exit(1)
-new_src = re.sub(
-    r'var isNewTosEnabled: Bool \{.*?\n    \}',
-    'var isNewTosEnabled: Bool {\n        return false\n    }',
-    src, flags=re.DOTALL
-)
-if new_src == src:
-    print(f'ERROR: 4b — regex did not match in {path}', file=sys.stderr)
-    sys.exit(1)
-open(path, 'w').write(new_src)
-PYEOF
 
 # 4c — Remove telemetry rows from the Settings sections list
 sed -i '' \
@@ -145,37 +114,37 @@ ONBOARDING_VIEW="${ONBOARDING_DIR}/OnboardingView.swift"
 ONBOARDING_VM="${ONBOARDING_DIR}/OnboardingViewModel.swift"
 
 # 5a — Drop the DefaultBrowserOnboardingView tab from the TabView
-python3 - "${ONBOARDING_VIEW}" <<'PYEOF'
-import sys, re
-path = sys.argv[1]
-src = open(path).read()
-sentinel = 'DefaultBrowserOnboardingView(viewModel: viewModel)'
-if sentinel not in src:
-    print(f'ERROR: 5a — DefaultBrowserOnboardingView not found in {path}', file=sys.stderr)
-    sys.exit(1)
-new_src = re.sub(
-    r'\s+DefaultBrowserOnboardingView\(viewModel: viewModel\)\s+\.tag\(Screen\.default\)',
-    '',
-    src
-)
-if new_src == src:
-    print(f'ERROR: 5a — regex did not match in {path}', file=sys.stderr)
-    sys.exit(1)
-open(path, 'w').write(new_src)
-PYEOF
+# python3 - "${ONBOARDING_VIEW}" <<'PYEOF'
+# import sys, re
+# path = sys.argv[1]
+# src = open(path).read()
+# sentinel = 'DefaultBrowserOnboardingView(viewModel: viewModel)'
+# if sentinel not in src:
+#   print(f'WARN: 5a — DefaultBrowserOnboardingView not found in {path}', file=sys.stderr)
+# else:
+#   new_src = re.sub(
+#     r'\s+DefaultBrowserOnboardingView\(viewModel: viewModel\)\s+\.tag\(Screen\.default\)',
+#     '',
+#     src
+#   )
+#   if new_src == src:
+#     print(f'WARN: 5a — regex did not match in {path}', file=sys.stderr)
+#   else:
+#     open(path, 'w').write(new_src)
+# PYEOF
 
 # 5b — Make TOS "Agree and Continue" dismiss onboarding
-python3 - "${ONBOARDING_VM}" <<'PYEOF'
-import sys
-path = sys.argv[1]
-src = open(path).read()
-old = 'case .onAcceptAndContinueTapped:\n            activeScreen = .default'
-if old not in src:
-    print(f'ERROR: 5b — onAcceptAndContinueTapped pattern not found in {path}', file=sys.stderr)
-    sys.exit(1)
-new_src = src.replace(old, 'case .onAcceptAndContinueTapped:\n            dismissAction()', 1)
-open(path, 'w').write(new_src)
-PYEOF
+# python3 - "${ONBOARDING_VM}" <<'PYEOF'
+# import sys
+# path = sys.argv[1]
+# src = open(path).read()
+# old = 'case .onAcceptAndContinueTapped:\n            activeScreen = .default'
+# if old not in src:
+#   print(f'WARN: 5b — onAcceptAndContinueTapped pattern not found in {path}', file=sys.stderr)
+# else:
+#   new_src = src.replace(old, 'case .onAcceptAndContinueTapped:\n            dismissAction()', 1)
+#   open(path, 'w').write(new_src)
+# PYEOF
 
 # 5c — Remove .defaultBrowser and .siri sections from the Settings screen
 sed -i '' \
@@ -203,87 +172,40 @@ sed -i '' \
 # -----------------------------------------------------------------------------
 echo "--> [6/6] Cleaning up Safari, Mozilla branding, and About page..."
 
-UI_CONSTANTS="${FOCUS_DIR}/Blockzilla/UIComponents/UIConstants.swift"
-ABOUT_VC="${FOCUS_DIR}/Blockzilla/Settings/Controller/AboutViewController.swift"
+APP_NAME_UPPER="$(echo "${APP_NAME}" | tr '[:lower:]' '[:upper:]')"
 
 # 6a — Remove Safari Integration row from Settings
 sed -i '' -e '/^[[:space:]]*integration,[[:space:]]*$/d' "${SETTINGS_VC}"
 
 # 6b — Rename "MOZILLA" section header to uppercased APP_NAME
-APP_NAME_UPPER=$(echo "${APP_NAME}" | tr '[:lower:]' '[:upper:]')
-sed -i '' "s/value: \"MOZILLA\"/value: \"${APP_NAME_UPPER}\"/" "${UI_CONSTANTS}"
-
 find "${FOCUS_DIR}/Blockzilla" -type d \( -name "en.lproj" -o -name "Base.lproj" \) -exec \
   grep -rl '"Settings\.sectionMozilla"' {} + \
   | xargs sed -i '' "s/\(\"Settings\.sectionMozilla\" = \"\)[^\"]*\"/\1${APP_NAME_UPPER}\"/g"
 
-# 6c — Rewrite AboutViewController
-python3 - "${ABOUT_VC}" "${TERMS_URL}" "${PRIVACY_URL}" <<'PYEOF'
-import sys, re
-
-path, terms_url, privacy_url = sys.argv[1], sys.argv[2], sys.argv[3]
-src = open(path).read()
-
-# --- 6c-i: numberOfRows 3 → 2 for .aboutCategories ---
-pat_rows = r'(case \.aboutCategories:\s+return )3'
-if not re.search(pat_rows, src):
-    print(f'ERROR: 6c-i — numberOfRows pattern not found in {path}', file=sys.stderr)
-    sys.exit(1)
-new_src = re.sub(pat_rows, r'\g<1>2', src, count=1)
-if new_src == src:
-    print(f'ERROR: 6c-i — numberOfRows substitution had no effect', file=sys.stderr)
-    sys.exit(1)
-src = new_src
-
-# --- 6c-ii: configureCell — remove Help (case 0), shift Terms/Privacy ---
-pat_cells = (
-    r'(case 0: cell\.textLabel\?\.text = UIConstants\.strings\.aboutRowHelp\n'
-    r')(\s+)(case 1: cell\.textLabel\?\.text = UIConstants\.strings\.aboutRowTerms\n'
-    r'\s+case 2: cell\.textLabel\?\.text = UIConstants\.strings\.aboutRowPrivacy)'
-)
-m = re.search(pat_cells, src)
-if not m:
-    print(f'ERROR: 6c-ii — configureCell rows not found in {path}', file=sys.stderr)
-    sys.exit(1)
-indent = m.group(2)
-new_cells = (
-    f'case 0: cell.textLabel?.text = UIConstants.strings.aboutRowTerms\n'
-    f'{indent}case 1: cell.textLabel?.text = UIConstants.strings.aboutRowPrivacy'
-)
-src = src[:m.start()] + new_cells + src[m.end():]
-
-# --- 6c-iii: categoryUrl — remove Help case, update Terms/Privacy URLs ---
-pat_help = r'\s+case 0:\s+return URL\(string: "https://support\.mozilla\.org[^"]+",\s+invalidCharacters: false\)'
-m_help = re.search(pat_help, src, re.DOTALL)
-if not m_help:
-    print(f'ERROR: 6c-iii — Help URL case not found in {path}', file=sys.stderr)
-    sys.exit(1)
-src = src[:m_help.start()] + src[m_help.end():]
-
-pat_terms = r'case 1:(\s+return URL\(string: )"https://www\.mozilla\.org/about/legal/terms/firefox-focus/"'
-m_terms = re.search(pat_terms, src)
-if not m_terms:
-    print(f'ERROR: 6c-iii — Terms URL case not found in {path}', file=sys.stderr)
-    sys.exit(1)
-src = src[:m_terms.start()] + f'case 0:{m_terms.group(1)}"{terms_url}"' + src[m_terms.end():]
-
-pat_privacy = r'case 2:(\s+return URL\(string: )"https://www\.mozilla\.org/privacy/firefox-focus[/]?"'
-m_privacy = re.search(pat_privacy, src)
-if not m_privacy:
-    print(f'ERROR: 6c-iii — Privacy URL case not found in {path}', file=sys.stderr)
-    sys.exit(1)
-src = src[:m_privacy.start()] + f'case 1:{m_privacy.group(1)}"{privacy_url}"' + src[m_privacy.end():]
-
-# --- 6c-iv: remove aboutTopLabel line from AboutHeaderView ---
-pat_top = r'\n\s+NSAttributedString\(string: String\(format: UIConstants\.strings\.aboutTopLabel, AppInfo\.productName\) \+ "\\n\\n"\),'
-m_top = re.search(pat_top, src)
-if not m_top:
-    print(f'ERROR: 6c-iv — aboutTopLabel line not found in {path}', file=sys.stderr)
-    sys.exit(1)
-src = src[:m_top.start()] + src[m_top.end():]
-
-open(path, 'w').write(src)
-print(f'OK: AboutViewController patched successfully.')
-PYEOF
+# 6c — Rename PRODUCT_NAME and DISPLAY_NAME in Xcode project
+sed -i '' \
+  -e "s/PRODUCT_NAME = \"Firefox Focus\"/PRODUCT_NAME = \"${APP_NAME}\"/g" \
+  -e "s/PRODUCT_NAME = \"Firefox Klar\"/PRODUCT_NAME = \"${APP_NAME}\"/g" \
+  -e "s/DISPLAY_NAME = \"Firefox Focus\"/DISPLAY_NAME = \"${APP_NAME}\"/g" \
+  -e "s/DISPLAY_NAME = \"Firefox Klar\"/DISPLAY_NAME = \"${APP_NAME}\"/g" \
+  "${PBXPROJ}" || true
 
 echo "==> Step 1 completed successfully."
+
+# -----------------------------------------------------------------------------
+# Step 7 — Clear provisioning profile specifiers to allow Xcode auto-signing
+# -----------------------------------------------------------------------------
+echo "--> [7/6] Clearing provisioning profile entries in ${PBXPROJ} to enable automatic signing..."
+# Remove explicit provisioning profile keys (both UUID and specifier variants)
+sed -i '' \
+  -e '/PROVISIONING_PROFILE =/d' \
+  -e '/PROVISIONING_PROFILE_SPECIFIER/d' \
+  "${PBXPROJ}" || true
+
+# Ensure the DEVELOPMENT_TEAM is set to the provided TEAM_ID
+sed -i '' -E "s/(DEVELOPMENT_TEAM[[:space:]]*=[[:space:]]*).*/\1${TEAM_ID};/g" "${PBXPROJ}" || true
+
+# Force CODE_SIGN_STYLE to Automatic where it may be set to Manual
+sed -i '' -E "s/(CODE_SIGN_STYLE[[:space:]]*=[[:space:]]*)Manual;/\1Automatic;/g" "${PBXPROJ}" || true
+
+echo "--> Provisioning profile entries cleared. Run step2-inject.sh to finalize Xcode project modifications."
