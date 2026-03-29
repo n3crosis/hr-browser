@@ -96,6 +96,14 @@ grep -rl "43AQ936H96" . \
 echo "--> [4/6] Disabling all telemetry and reporting..."
 
 SETTINGS_VC="${FOCUS_DIR}/Blockzilla/Settings/Controller/SettingsViewController.swift"
+APP_DELEGATE="${FOCUS_DIR}/Blockzilla/AppDelegate.swift"
+
+# 4a — Remove telemetry setup calls from AppDelegate
+sed -i '' \
+  -e '/^[[:space:]]*setupCrashReporting()/d' \
+  -e '/^[[:space:]]*setupTelemetry()/d' \
+  -e '/^[[:space:]]*setupExperimentation()/d' \
+  "${APP_DELEGATE}"
 
 # 4c — Remove telemetry rows from the Settings sections list
 sed -i '' \
